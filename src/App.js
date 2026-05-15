@@ -1,4 +1,20 @@
 import { useState, useEffect, useRef } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy } from "firebase/firestore";
+
+// ── FIREBASE CONFIG ──
+const firebaseConfig = {
+  apiKey: "AIzaSyBaA93iN6sNS9Iedtx4hwLH9-oERtDtb9E",
+  authDomain: "daily-task-tracker-8653b.firebaseapp.com",
+  projectId: "daily-task-tracker-8653b",
+  storageBucket: "daily-task-tracker-8653b.firebasestorage.app",
+  messagingSenderId: "793425605823",
+  appId: "1:793425605823:web:3dd8732209aeb1fa6cc20a",
+  measurementId: "G-G6BDTJG3CL"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 
 const PRIORITIES = ["High", "Medium", "Low"];
 const PRIORITY_COLOR = { High: "#ef4444", Medium: "#f59e0b", Low: "#22c55e" };
@@ -9,13 +25,9 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function getToday() { return new Date().toISOString().split("T")[0]; }
 
-function autoRollover(tasks) {
-  const today = getToday();
-  return tasks.map(t => (!t.done && t.date < today) ? { ...t, date: today, rolledOver: true, rolloverReason: t.rolloverReason || "Auto rolled over (overdue)" } : t);
-}
-
 export default function App() {
   const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ title: "", desc: "", time: "", priority: "Medium" });
   const [streak, setStreak] = useState(0);
   const [lastCompleteDate, setLastCompleteDate] = useState("");
@@ -31,21 +43,50 @@ export default function App() {
   const [calendarMonth, setCalendarMonth] = useState(new Date());
   const [weeklyData, setWeeklyData] = useState([0,0,0,0,0,0,0]);
   const [exportOpen, setExportOpen] = useState(false);
-  const [editModal, setEditModal] = useState(null); // {id, title, desc, time, priority}
+  const [editModal, setEditModal] = useState(null);
   const [editForm, setEditForm] = useState({ title:"", desc:"", time:"", priority:"Medium" });
   const notifRef = useRef({});
   const [quote] = useState(MOTIVATIONAL[Math.floor(Math.random() * MOTIVATIONAL.length)]);
 
-  // ── STORAGE: use in-memory state (localStorage blocked in Claude.ai) ──
+  // ── FIREBASE: Real-time listener ──
   useEffect(() => {
-    // On mount, apply rollover to any existing tasks
-    setTasks(prev => autoRollover(prev));
+    const q = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const today = getToday();
+      const data = snapshot.docs.map(d => {
+        const t = { id: d.id, ...d.data() };
+        // Auto rollover overdue tasks
+        if (!t.done && t.date && t.date < today) {
+          updateDoc(doc(db, "tasks", t.id), { date: today, rolledOver: true, rolloverReason: t.rolloverReason || "Auto rolled over (overdue)" });
+          return { ...t, date: today, rolledOver: true };
+        }
+        return t;
+      });
+      setTasks(data);
+      setLoading(false);
+    }, (error) => {
+      console.error("Firebase error:", error);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // ── FIREBASE: Load meta (streak, history, weeklyData) from localStorage ──
+  useEffect(() => {
+    try {
+      const meta = JSON.parse(localStorage.getItem("taskapp_meta") || "{}");
+      if (meta.streak) setStreak(meta.streak);
+      if (meta.lastCompleteDate) setLastCompleteDate(meta.lastCompleteDate);
+      if (meta.history) setHistory(meta.history);
+      if (meta.weeklyData) setWeeklyData(meta.weeklyData);
+    } catch {}
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(() => setTasks(prev => autoRollover(prev)), 60000);
-    return () => clearInterval(interval);
-  }, []);
+    try {
+      localStorage.setItem("taskapp_meta", JSON.stringify({ streak, lastCompleteDate, history, weeklyData }));
+    } catch {}
+  }, [streak, lastCompleteDate, history, weeklyData]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -66,82 +107,105 @@ export default function App() {
 
   function showToast(msg, type="success") { setToast({msg,type}); setTimeout(()=>setToast(null),3500); }
 
-  function addTask() {
+  // ── FIREBASE CRUD ──
+  async function addTask() {
     if (!form.title.trim()) return;
-    setTasks(prev => [...prev, { id: Date.now(), title: form.title.trim(), desc: form.desc.trim(), time: form.time, priority: form.priority, done: false, date: getToday(), rolledOver: false, rolloverReason: "" }]);
-    setForm({ title: "", desc: "", time: "", priority: "Medium" });
-    setShowAdd(false);
-    showToast("✅ Task added successfully!");
-  }
-
-  function completeTask(id) {
-    setTasks(prev => prev.map(t => t.id === id ? {...t, done: true} : t));
-    showToast(APPRECIATION[Math.floor(Math.random()*APPRECIATION.length)], "appreciate");
-    const today = getToday();
-    const yest = new Date(); yest.setDate(yest.getDate()-1);
-    if (lastCompleteDate !== today) {
-      setStreak(s => lastCompleteDate===yest.toISOString().split("T")[0]||!lastCompleteDate ? s+1 : 1);
-      setLastCompleteDate(today);
+    try {
+      await addDoc(collection(db, "tasks"), {
+        title: form.title.trim(),
+        desc: form.desc.trim(),
+        time: form.time,
+        priority: form.priority,
+        done: false,
+        date: getToday(),
+        rolledOver: false,
+        rolloverReason: "",
+        createdAt: new Date().toISOString()
+      });
+      setForm({ title: "", desc: "", time: "", priority: "Medium" });
+      setShowAdd(false);
+      showToast("✅ Task added successfully!");
+    } catch (e) {
+      showToast("Error adding task!", "error");
     }
-    const day = new Date().getDay();
-    setWeeklyData(prev => { const n=[...prev]; n[day]=(n[day]||0)+1; return n; });
   }
 
-  function deleteTask(id) { setTasks(prev => prev.filter(t => t.id !== id)); }
+  async function completeTask(id) {
+    try {
+      await updateDoc(doc(db, "tasks", id), { done: true });
+      showToast(APPRECIATION[Math.floor(Math.random()*APPRECIATION.length)], "appreciate");
+      const today = getToday();
+      const yest = new Date(); yest.setDate(yest.getDate()-1);
+      if (lastCompleteDate !== today) {
+        setStreak(s => lastCompleteDate===yest.toISOString().split("T")[0]||!lastCompleteDate ? s+1 : 1);
+        setLastCompleteDate(today);
+      }
+      const day = new Date().getDay();
+      setWeeklyData(prev => { const n=[...prev]; n[day]=(n[day]||0)+1; return n; });
+    } catch { showToast("Error!", "error"); }
+  }
+
+  async function deleteTask(id) {
+    try {
+      await deleteDoc(doc(db, "tasks", id));
+      showToast("🗑️ Task deleted!");
+    } catch { showToast("Error!", "error"); }
+  }
 
   function openEdit(t) {
     setEditForm({ title: t.title, desc: t.desc||"", time: t.time||"", priority: t.priority });
     setEditModal(t);
   }
 
-  function saveEdit() {
+  async function saveEdit() {
     if (!editForm.title.trim()) { showToast("Title cannot be empty!", "error"); return; }
-    setTasks(prev => prev.map(t => t.id===editModal.id ? { ...t, title: editForm.title.trim(), desc: editForm.desc.trim(), time: editForm.time, priority: editForm.priority } : t));
-    setEditModal(null);
-    showToast("✏️ Task updated successfully!");
+    try {
+      await updateDoc(doc(db, "tasks", editModal.id), {
+        title: editForm.title.trim(),
+        desc: editForm.desc.trim(),
+        time: editForm.time,
+        priority: editForm.priority
+      });
+      setEditModal(null);
+      showToast("✏️ Task updated successfully!");
+    } catch { showToast("Error updating!", "error"); }
   }
 
-  function confirmRollover() {
+  async function confirmRollover() {
     if (!rolloverReason.trim()) { showToast("Please enter a reason!", "error"); return; }
     const tom = new Date(); tom.setDate(tom.getDate()+1);
     const tStr = tom.toISOString().split("T")[0];
-    setHistory(prev => [...prev, { id: rolloverModal.id, title: rolloverModal.title, date: getToday(), rolledTo: tStr, reason: rolloverReason }]);
-    setTasks(prev => prev.map(t => t.id===rolloverModal.id ? {...t, date: tStr, rolledOver: true, rolloverReason} : t));
-    setRolloverModal(null); setRolloverReason("");
-    showToast("🔄 Task moved to tomorrow!");
+    try {
+      await updateDoc(doc(db, "tasks", rolloverModal.id), { date: tStr, rolledOver: true, rolloverReason });
+      setHistory(prev => [...prev, { id: rolloverModal.id, title: rolloverModal.title, date: getToday(), rolledTo: tStr, reason: rolloverReason }]);
+      setRolloverModal(null); setRolloverReason("");
+      showToast("🔄 Task moved to tomorrow!");
+    } catch { showToast("Error!", "error"); }
   }
 
-  function endDay() {
+  async function endDay() {
     const today = getToday();
     const todayT = tasks.filter(t => t.date===today);
     const done = todayT.filter(t => t.done).length;
     if (!todayT.length) { showToast("No tasks for today!", "error"); return; }
     const tom = new Date(); tom.setDate(tom.getDate()+1);
     const tStr = tom.toISOString().split("T")[0];
-    setTasks(prev => prev.map(t => (!t.done && t.date===today) ? {...t, date: tStr, rolledOver: true, rolloverReason:"Auto rolled over on Day End"} : t));
-    setHistory(prev => [...prev, { type:"daily_summary", date: today, done, total: todayT.length, achievement: done===todayT.length?"Perfect Day! 🏆":done>todayT.length/2?"Good Job! 👍":"Keep Trying! 💪" }]);
-    showToast(`🏁 Day ended! ${done}/${todayT.length} complete. Pending moved to tomorrow!`, "appreciate");
+    try {
+      for (const t of todayT.filter(t => !t.done)) {
+        await updateDoc(doc(db, "tasks", t.id), { date: tStr, rolledOver: true, rolloverReason: "Auto rolled over on Day End" });
+      }
+      setHistory(prev => [...prev, { type:"daily_summary", date: today, done, total: todayT.length, achievement: done===todayT.length?"Perfect Day! 🏆":done>todayT.length/2?"Good Job! 👍":"Keep Trying! 💪" }]);
+      showToast(`🏁 Day ended! ${done}/${todayT.length} complete. Pending moved to tomorrow!`, "appreciate");
+    } catch { showToast("Error!", "error"); }
   }
 
-  // ── EXPORT FUNCTIONS ──
+  // ── EXPORT ──
   function exportCSV() {
     const headers = ["Title","Description","Priority","Date","Time","Status","Rolled Over","Rollover Reason"];
     const rows = tasks.map(t => [`"${t.title}"`,`"${t.desc||""}"`,t.priority,t.date,t.time||"",t.done?"Completed":"Pending",t.rolledOver?"Yes":"No",`"${t.rolloverReason||""}"`]);
     const csv = [headers.join(","), ...rows.map(r=>r.join(","))].join("\n");
     download(new Blob([csv],{type:"text/csv"}), "tasks.csv");
     showToast("📊 CSV exported!");
-  }
-
-  function exportXLSX() {
-    const esc = v => String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    const headers = ["#","Title","Description","Priority","Date","Time","Status","Rolled Over","Reason"];
-    const rows = tasks.map((t,i) => [i+1, t.title, t.desc||"", t.priority, t.date, t.time||"", t.done?"Completed":"Pending", t.rolledOver?"Yes":"No", t.rolloverReason||""]);
-    const cell = (v,bold) => `<Cell><Data ss:Type="String"${bold?' ss:Bold="1"':""} >${esc(v)}</Data></Cell>`;
-    const xml = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Tasks"><Table>${
-      `<Row>${headers.map(h=>cell(h,true)).join("")}</Row>`
-    }${rows.map(r=>`<Row>${r.map(v=>cell(v,false)).join("")}</Row>`).join("")}</Table></Worksheet></Workbook>`;
-    download(new Blob([xml],{type:"application/vnd.ms-excel;charset=utf-8"}), "tasks.xls");
-    showToast("📊 Excel (XLS) exported!");
   }
 
   function exportPDF() {
@@ -177,19 +241,10 @@ export default function App() {
   const todayTasks = tasks.filter(t => t.date === today);
   const doneTasks = todayTasks.filter(t => t.done);
   const pendingTasks = todayTasks.filter(t => !t.done);
-
-  // ── FIX: All stat cards now use consistent scope ──
   const allDone = tasks.filter(t => t.done).length;
   const allTotal = tasks.length;
-  // Today's completion rate (today's done / today's total)
-  const todayProgress = todayTasks.length > 0
-    ? Math.round((doneTasks.length / todayTasks.length) * 100)
-    : 0;
-  // All-time completion rate
-  const allTimeRate = allTotal > 0
-    ? Math.round((allDone / allTotal) * 100)
-    : 0;
-
+  const todayProgress = todayTasks.length > 0 ? Math.round((doneTasks.length / todayTasks.length) * 100) : 0;
+  const allTimeRate = allTotal > 0 ? Math.round((allDone / allTotal) * 100) : 0;
   const maxWeekly = Math.max(...weeklyData, 1);
   const greetHour = new Date().getHours();
   const greeting = greetHour<12?"Good Morning":greetHour<17?"Good Afternoon":"Good Evening";
@@ -211,13 +266,17 @@ export default function App() {
     {id:"achievements", icon:"★", label:"Achievements"},
   ];
 
-  const exportItems = [
-    {label:"PDF / Print", icon:"📄", action: exportPDF},
-    {label:"Excel (CSV)", icon:"📊", action: exportCSV},
-    {label:"Excel (XLS)", icon:"📗", action: exportXLSX},
-  ];
-
   const ib = (bg,bc,col) => ({ background:bg, border:`1px solid ${bc}`, borderRadius:6, color:col, padding:"4px 9px", fontSize:11, cursor:"pointer", fontWeight:600 });
+
+  if (loading) return (
+    <div style={{ display:"flex", height:"100vh", alignItems:"center", justifyContent:"center", background:"#0f1117", flexDirection:"column", gap:16 }}>
+      <div style={{ fontSize:40 }}>📋</div>
+      <div style={{ color:"#6366f1", fontSize:18, fontWeight:700 }}>Daily Task Tracker</div>
+      <div style={{ color:"#94a3b8", fontSize:14 }}>Loading your tasks...</div>
+      <div style={{ width:40, height:40, border:"4px solid #6366f133", borderTop:"4px solid #6366f1", borderRadius:"50%", animation:"spin 1s linear infinite" }}/>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
 
   return (
     <div style={{ display:"flex", height:"100vh", background:c.bg, color:c.text, fontFamily:"'Segoe UI',sans-serif", overflow:"hidden" }}>
@@ -247,13 +306,12 @@ export default function App() {
 
           <div style={{ padding:"0 10px 6px", flexShrink:0 }}>
             <button onClick={()=>setExportOpen(o=>!o)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"8px 11px", borderRadius:9, border:`1px solid ${c.border}`, cursor:"pointer", width:"100%", background:exportOpen?`${c.accent}22`:"transparent", color:exportOpen?c.accent:c.sub, fontWeight:600, fontSize:13 }}>
-              <span>⬇ Export</span>
-              <span style={{ fontSize:10 }}>{exportOpen?"▲":"▼"}</span>
+              <span>⬇ Export</span><span style={{fontSize:10}}>{exportOpen?"▲":"▼"}</span>
             </button>
             {exportOpen && (
               <div style={{ marginTop:4, background:c.card2, borderRadius:9, border:`1px solid ${c.border}`, overflow:"hidden" }}>
-                {exportItems.map((e,i) => (
-                  <button key={i} onClick={()=>{e.action();setExportOpen(false);}} style={{ display:"flex", alignItems:"center", gap:9, padding:"8px 13px", border:"none", borderBottom:i<exportItems.length-1?`1px solid ${c.border}`:"none", cursor:"pointer", width:"100%", background:"transparent", color:c.text, fontSize:13, fontWeight:500 }}>
+                {[{label:"PDF / Print",icon:"📄",action:exportPDF},{label:"Excel (CSV)",icon:"📊",action:exportCSV}].map((e,i)=>(
+                  <button key={i} onClick={()=>{e.action();setExportOpen(false);}} style={{ display:"flex", alignItems:"center", gap:9, padding:"8px 13px", border:"none", borderBottom:i<1?`1px solid ${c.border}`:"none", cursor:"pointer", width:"100%", background:"transparent", color:c.text, fontSize:13, fontWeight:500 }}>
                     <span style={{fontSize:15}}>{e.icon}</span>{e.label}
                   </button>
                 ))}
@@ -270,9 +328,9 @@ export default function App() {
           {/* Mini Calendar */}
           <div style={{ padding:"10px 14px", borderTop:`1px solid ${c.border}`, flexShrink:0 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 }}>
-              <button onClick={()=>{ const d=new Date(calendarMonth); d.setMonth(d.getMonth()-1); setCalendarMonth(d); }} style={{ background:"none", border:"none", color:c.sub, cursor:"pointer", fontSize:14, padding:"0 2px" }}>‹</button>
+              <button onClick={()=>{ const d=new Date(calendarMonth); d.setMonth(d.getMonth()-1); setCalendarMonth(d); }} style={{ background:"none", border:"none", color:c.sub, cursor:"pointer", fontSize:14 }}>‹</button>
               <div style={{ fontSize:11, fontWeight:700, color:"#fff" }}>{calendarMonth.toLocaleString("default",{month:"short"})} {calendarMonth.getFullYear()}</div>
-              <button onClick={()=>{ const d=new Date(calendarMonth); d.setMonth(d.getMonth()+1); setCalendarMonth(d); }} style={{ background:"none", border:"none", color:c.sub, cursor:"pointer", fontSize:14, padding:"0 2px" }}>›</button>
+              <button onClick={()=>{ const d=new Date(calendarMonth); d.setMonth(d.getMonth()+1); setCalendarMonth(d); }} style={{ background:"none", border:"none", color:c.sub, cursor:"pointer", fontSize:14 }}>›</button>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:1, marginBottom:2 }}>
               {["S","M","T","W","T","F","S"].map((d,i)=><div key={i} style={{ textAlign:"center", fontSize:9, color:c.sub, fontWeight:600 }}>{d}</div>)}
@@ -331,14 +389,12 @@ export default function App() {
 
           {/* DASHBOARD */}
           {view==="dashboard" && (<>
-            {/* ── FIX: All 4 cards now use same scope (all-time) with clear labels ── */}
             <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:13, marginBottom:16 }}>
               {[
-                {label:"Total Tasks",    value:allTotal,         icon:"📋", color:c.accent,  sub:"All tasks added"},
-                {label:"Completed",      value:allDone,          icon:"✅", color:c.green,   sub:"All time"},
-                {label:"Pending Today",  value:pendingTasks.length, icon:"⏳", color:c.yellow, sub:"Due today"},
-                // FIX: Show today's completion rate clearly labeled, and all-time rate as sub
-                {label:"Today's Rate",   value:`${todayProgress}%`, icon:"📊", color:c.accent2, sub:`All-time: ${allTimeRate}%`},
+                {label:"Total Tasks", value:allTotal, icon:"📋", color:c.accent, sub:"All tasks added"},
+                {label:"Completed", value:allDone, icon:"✅", color:c.green, sub:"All time"},
+                {label:"Pending Today", value:pendingTasks.length, icon:"⏳", color:c.yellow, sub:"Due today"},
+                {label:"Today's Rate", value:`${todayProgress}%`, icon:"📊", color:c.accent2, sub:`All-time: ${allTimeRate}%`},
               ].map((s,i)=>(
                 <div key={i} style={{ background:c.card, borderRadius:13, padding:"14px 16px", border:`1px solid ${c.border}`, position:"relative", overflow:"hidden" }}>
                   <div style={{ position:"absolute", top:-10, right:-10, fontSize:46, opacity:0.07 }}>{s.icon}</div>
@@ -351,7 +407,6 @@ export default function App() {
             </div>
 
             <div style={{ display:"grid", gridTemplateColumns:"1.2fr 0.8fr 1fr", gap:13 }}>
-              {/* Today Tasks */}
               <div style={{ background:c.card, borderRadius:13, padding:"14px", border:`1px solid ${c.border}` }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:11 }}>
                   <button onClick={()=>setView("tasks")} style={{ fontWeight:700, fontSize:14, background:"none", border:"none", color:c.text, cursor:"pointer", padding:0 }}>📋 Today's Tasks ↗</button>
@@ -399,11 +454,10 @@ export default function App() {
                 )}
               </div>
 
-              {/* Activity Feed */}
               <div style={{ background:c.card, borderRadius:13, padding:"14px", border:`1px solid ${c.border}` }}>
                 <div style={{ fontWeight:700, fontSize:14, marginBottom:11 }}>⚡ Activity Feed</div>
                 <div style={{ display:"flex", flexDirection:"column", gap:8, maxHeight:320, overflowY:"auto" }}>
-                  {[...tasks].reverse().slice(0,12).map((t,i)=>(
+                  {[...tasks].slice(0,12).map((t,i)=>(
                     <div key={i} style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
                       <div style={{ width:24, height:24, borderRadius:"50%", background:t.done?"#22c55e22":"#6366f122", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, flexShrink:0 }}>{t.done?"✅":"📌"}</div>
                       <div>
@@ -416,13 +470,12 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Weekly Summary */}
               <div style={{ background:c.card, borderRadius:13, padding:"14px", border:`1px solid ${c.border}` }}>
                 <div style={{ fontWeight:700, fontSize:14, marginBottom:11 }}>📈 Weekly Summary</div>
                 <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:100, marginBottom:7 }}>
                   {weeklyData.map((v,i)=>(
                     <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
-                      <div style={{ width:"100%", height:v>0?`${Math.round((v/maxWeekly)*100)}%`:4, minHeight:4, background:i===new Date().getDay()?`linear-gradient(180deg,${c.accent},${c.accent2})`:c.card2, borderRadius:"4px 4px 0 0", boxShadow:i===new Date().getDay()?`0 0 8px ${c.accent}66`:"none" }}/>
+                      <div style={{ width:"100%", height:v>0?`${Math.round((v/maxWeekly)*100)}%`:4, minHeight:4, background:i===new Date().getDay()?`linear-gradient(180deg,${c.accent},${c.accent2})`:c.card2, borderRadius:"4px 4px 0 0" }}/>
                       <div style={{ fontSize:9, color:i===new Date().getDay()?c.accent:c.sub, fontWeight:i===new Date().getDay()?700:400 }}>{DAYS[i]}</div>
                     </div>
                   ))}
@@ -616,21 +669,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Rollover Modal */}
-      {rolloverModal&&(
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }} onClick={()=>setRolloverModal(null)}>
-          <div style={{ background:c.card, borderRadius:17, padding:24, width:390, border:`1px solid ${c.border}` }} onClick={e=>e.stopPropagation()}>
-            <div style={{ fontWeight:800, fontSize:16, marginBottom:6 }}>🔄 Rollover Task</div>
-            <div style={{ color:c.sub, fontSize:14, marginBottom:13 }}>Move "{rolloverModal.title}" to tomorrow</div>
-            <textarea style={{ width:"100%", background:darkMode?"#0f1117":c.card2, border:`1px solid ${c.border}`, borderRadius:8, padding:"9px 12px", color:c.text, fontSize:14, boxSizing:"border-box", minHeight:72, resize:"vertical", outline:"none", marginBottom:13 }}
-              placeholder="Enter reason..." value={rolloverReason} onChange={e=>setRolloverReason(e.target.value)} />
-            <div style={{ display:"flex", gap:8 }}>
-              <button onClick={()=>setRolloverModal(null)} style={{ flex:1, background:c.card2, border:`1px solid ${c.border}`, borderRadius:8, color:c.sub, padding:"10px", cursor:"pointer", fontWeight:600 }}>Cancel</button>
-              <button onClick={confirmRollover} style={{ flex:1, background:`linear-gradient(90deg,${c.yellow},#f97316)`, border:"none", borderRadius:8, color:"#fff", padding:"10px", cursor:"pointer", fontWeight:700 }}>🔄 Move to Tomorrow</button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* Edit Task Modal */}
       {editModal&&(
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }} onClick={()=>setEditModal(null)}>
@@ -650,6 +688,22 @@ export default function App() {
             <div style={{ display:"flex", gap:8 }}>
               <button onClick={()=>setEditModal(null)} style={{ flex:1, background:c.card2, border:`1px solid ${c.border}`, borderRadius:8, color:c.sub, padding:"10px", cursor:"pointer", fontWeight:600 }}>Cancel</button>
               <button onClick={saveEdit} style={{ flex:1, background:`linear-gradient(90deg,${c.accent},${c.accent2})`, border:"none", borderRadius:8, color:"#fff", padding:"10px", cursor:"pointer", fontWeight:700 }}>Save Changes ✅</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rollover Modal */}
+      {rolloverModal&&(
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }} onClick={()=>setRolloverModal(null)}>
+          <div style={{ background:c.card, borderRadius:17, padding:24, width:390, border:`1px solid ${c.border}` }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:16, marginBottom:6 }}>🔄 Rollover Task</div>
+            <div style={{ color:c.sub, fontSize:14, marginBottom:13 }}>Move "{rolloverModal.title}" to tomorrow</div>
+            <textarea style={{ width:"100%", background:darkMode?"#0f1117":c.card2, border:`1px solid ${c.border}`, borderRadius:8, padding:"9px 12px", color:c.text, fontSize:14, boxSizing:"border-box", minHeight:72, resize:"vertical", outline:"none", marginBottom:13 }}
+              placeholder="Enter reason..." value={rolloverReason} onChange={e=>setRolloverReason(e.target.value)} />
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={()=>setRolloverModal(null)} style={{ flex:1, background:c.card2, border:`1px solid ${c.border}`, borderRadius:8, color:c.sub, padding:"10px", cursor:"pointer", fontWeight:600 }}>Cancel</button>
+              <button onClick={confirmRollover} style={{ flex:1, background:`linear-gradient(90deg,${c.yellow},#f97316)`, border:"none", borderRadius:8, color:"#fff", padding:"10px", cursor:"pointer", fontWeight:700 }}>🔄 Move to Tomorrow</button>
             </div>
           </div>
         </div>
