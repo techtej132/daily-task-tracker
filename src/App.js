@@ -50,7 +50,7 @@ export default function App() {
 
   // ── FIREBASE: Real-time listener ──
   useEffect(() => {
-    const q = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
+   const q = query(collection(db, "tasks"));
     const unsub = onSnapshot(q, (snapshot) => {
       const today = getToday();
       const data = snapshot.docs.map(d => {
