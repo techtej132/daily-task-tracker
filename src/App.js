@@ -155,7 +155,7 @@ export default function App() {
   // ── MOBILE LAYOUT ──
   if (mobile) {
     return (
-      <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:c.bg, color:c.text, fontFamily:"'Segoe UI',sans-serif", overflow:"hidden" }}>
+      <div style={{ display:"flex", flexDirection:"column", height:"100svh", background:c.bg, color:c.text, fontFamily:"'Segoe UI',sans-serif", overflow:"hidden" }}>
 
         {/* Toast */}
         {toast && <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:toast.type==="error"?c.red:toast.type==="appreciate"?c.accent2:c.green, color:"#fff", padding:"10px 20px", borderRadius:12, fontWeight:600, fontSize:13, zIndex:999, boxShadow:"0 4px 20px #0008", maxWidth:"90vw", textAlign:"center", whiteSpace:"nowrap" }}>{toast.msg}</div>}
@@ -452,7 +452,7 @@ export default function App() {
 
   // ── DESKTOP LAYOUT ──
   return (
-    <div style={{ display:"flex", height:"100vh", background:c.bg, color:c.text, fontFamily:"'Segoe UI',sans-serif", overflow:"hidden" }}>
+    <div style={{ display:"flex", height:"100svh", background:c.bg, color:c.text, fontFamily:"'Segoe UI',sans-serif", overflow:"hidden" }}>
 
       {toast && <div style={{ position:"fixed", top:18, left:"50%", transform:"translateX(-50%)", background:toast.type==="error"?c.red:toast.type==="appreciate"?c.accent2:c.green, color:"#fff", padding:"10px 22px", borderRadius:12, fontWeight:600, fontSize:14, zIndex:999, boxShadow:"0 4px 20px #0008", maxWidth:520, textAlign:"center" }}>{toast.msg}</div>}
 
